@@ -295,6 +295,7 @@ extern void make_checkers (auto_delete_vec <state_machine> &out,
 
 extern state_machine *make_malloc_state_machine (logger *logger);
 extern state_machine *make_fileptr_state_machine (logger *logger);
+extern state_machine *make_fd_state_machine(logger *logger);
 extern state_machine *make_taint_state_machine (logger *logger);
 extern state_machine *make_sensitive_state_machine (logger *logger);
 extern state_machine *make_signal_state_machine (logger *logger);
