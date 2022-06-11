@@ -50,6 +50,12 @@ along with GCC; see the file COPYING3.  If not see
 #include "vec-perm-indices.h"
 #include "gimple-range.h"
 
+
+/* TODO:  Note the vectorizer still builds COND_EXPRs with GENERIC compares
+   in the first operand.  Disentangling this is future work, the
+   IL is properly transfered to VEC_COND_EXPRs with separate compares.  */
+
+
 /* Return true if we have a useful VR_RANGE range for VAR, storing it
    in *MIN_VALUE and *MAX_VALUE if so.  Note the range in the dump files.  */
 
@@ -2643,7 +2649,8 @@ vect_recog_rotate_pattern (vec_info *vinfo,
 
 	  vec_perm_indices indices (elts, 1,
 				    TYPE_VECTOR_SUBPARTS (char_vectype));
-	  if (can_vec_perm_const_p (TYPE_MODE (char_vectype), indices))
+	  machine_mode vmode = TYPE_MODE (char_vectype);
+	  if (can_vec_perm_const_p (vmode, vmode, indices))
 	    {
 	      /* vectorizable_bswap can handle the __builtin_bswap16 if we
 		 undo the argument promotion.  */
@@ -4450,18 +4457,18 @@ vect_recog_bool_pattern (vec_info *vinfo,
       if (get_vectype_for_scalar_type (vinfo, type) == NULL_TREE)
 	return NULL;
 
-      if (!check_bool_pattern (var, vinfo, bool_stmts))
+      if (check_bool_pattern (var, vinfo, bool_stmts))
+	var = adjust_bool_stmts (vinfo, bool_stmts, type, stmt_vinfo);
+      else if (integer_type_for_mask (var, vinfo))
 	return NULL;
-
-      rhs = adjust_bool_stmts (vinfo, bool_stmts, type, stmt_vinfo);
 
       lhs = vect_recog_temp_ssa_var (TREE_TYPE (lhs), NULL);
       pattern_stmt 
-	  = gimple_build_assign (lhs, COND_EXPR,
-				 build2 (NE_EXPR, boolean_type_node,
-					 rhs, build_int_cst (type, 0)),
-				 gimple_assign_rhs2 (last_stmt),
-				 gimple_assign_rhs3 (last_stmt));
+	= gimple_build_assign (lhs, COND_EXPR,
+			       build2 (NE_EXPR, boolean_type_node,
+				       var, build_int_cst (TREE_TYPE (var), 0)),
+			       gimple_assign_rhs2 (last_stmt),
+			       gimple_assign_rhs3 (last_stmt));
       *type_out = vectype;
       vect_pattern_detected ("vect_recog_bool_pattern", last_stmt);
 

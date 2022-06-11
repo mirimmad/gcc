@@ -135,8 +135,8 @@ C ObjC C++ ObjC++ Separate Alias(o)
 -output=
 C ObjC C++ ObjC++ Joined Alias(o)
 
--output-pch=
-C ObjC C++ ObjC++ Joined Separate
+-output-pch
+C ObjC C++ ObjC++ Separate
 
 -pedantic
 C ObjC C++ ObjC++ Alias(pedantic)
@@ -637,6 +637,10 @@ Warn about comparison of different enum types.
 Wenum-conversion
 C ObjC C++ ObjC++ Var(warn_enum_conversion) Init(0) Warning LangEnabledBy(C ObjC,Wextra)
 Warn about implicit conversion of enum types.
+
+Wenum-int-mismatch
+C ObjC Var(warn_enum_int_mismatch) Warning LangEnabledBy(C ObjC,Wall || Wc++-compat)
+Warn about enum/integer type mismatches.
 
 Werror
 C ObjC C++ ObjC++

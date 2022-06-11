@@ -70,6 +70,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "escaped_string.h"
 #include "gimple-range.h"
 #include "gomp-constants.h"
+#include "dfp.h"
 
 /* Tree code classes.  */
 
@@ -279,7 +280,7 @@ unsigned const char omp_clause_num_ops[] =
   1, /* OMP_CLAUSE_DEPEND  */
   1, /* OMP_CLAUSE_NONTEMPORAL  */
   1, /* OMP_CLAUSE_UNIFORM  */
-  1, /* OMP_CLAUSE_TO_DECLARE  */
+  1, /* OMP_CLAUSE_ENTER  */
   1, /* OMP_CLAUSE_LINK  */
   1, /* OMP_CLAUSE_DETACH  */
   1, /* OMP_CLAUSE_USE_DEVICE_PTR  */
@@ -369,7 +370,7 @@ const char * const omp_clause_code_name[] =
   "depend",
   "nontemporal",
   "uniform",
-  "to",
+  "enter",
   "link",
   "detach",
   "use_device_ptr",
@@ -2380,18 +2381,34 @@ tree
 build_real (tree type, REAL_VALUE_TYPE d)
 {
   tree v;
-  REAL_VALUE_TYPE *dp;
   int overflow = 0;
+
+  /* dconst{1,2,m1,half} are used in various places in
+     the middle-end and optimizers, allow them here
+     even for decimal floating point types as an exception
+     by converting them to decimal.  */
+  if (DECIMAL_FLOAT_MODE_P (TYPE_MODE (type))
+      && d.cl == rvc_normal
+      && !d.decimal)
+    {
+      if (memcmp (&d, &dconst1, sizeof (d)) == 0)
+	decimal_real_from_string (&d, "1");
+      else if (memcmp (&d, &dconst2, sizeof (d)) == 0)
+	decimal_real_from_string (&d, "2");
+      else if (memcmp (&d, &dconstm1, sizeof (d)) == 0)
+	decimal_real_from_string (&d, "-1");
+      else if (memcmp (&d, &dconsthalf, sizeof (d)) == 0)
+	decimal_real_from_string (&d, "0.5");
+      else
+	gcc_unreachable ();
+    }
 
   /* ??? Used to check for overflow here via CHECK_FLOAT_TYPE.
      Consider doing it via real_convert now.  */
 
   v = make_node (REAL_CST);
-  dp = ggc_alloc<real_value> ();
-  memcpy (dp, &d, sizeof (REAL_VALUE_TYPE));
-
   TREE_TYPE (v) = type;
-  TREE_REAL_CST_PTR (v) = dp;
+  memcpy (TREE_REAL_CST_PTR (v), &d, sizeof (REAL_VALUE_TYPE));
   TREE_OVERFLOW (v) = overflow;
   return v;
 }
@@ -9391,9 +9408,7 @@ build_common_tree_nodes (bool signed_char)
   ptr_type_node = build_pointer_type (void_type_node);
   const_ptr_type_node
     = build_pointer_type (build_type_variant (void_type_node, 1, 0));
-  for (unsigned i = 0;
-       i < sizeof (builtin_structptr_types) / sizeof (builtin_structptr_type);
-       ++i)
+  for (unsigned i = 0; i < ARRAY_SIZE (builtin_structptr_types); ++i)
     builtin_structptr_types[i].node = builtin_structptr_types[i].base;
 
   pointer_sized_int_node = build_nonstandard_integer_type (POINTER_SIZE, 1);

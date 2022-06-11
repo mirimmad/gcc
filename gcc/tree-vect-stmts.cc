@@ -2016,7 +2016,8 @@ perm_mask_for_reverse (tree vectype)
     sel.quick_push (nunits - 1 - i);
 
   vec_perm_indices indices (sel, 1, nunits);
-  if (!can_vec_perm_const_p (TYPE_MODE (vectype), indices))
+  if (!can_vec_perm_const_p (TYPE_MODE (vectype), TYPE_MODE (vectype),
+			     indices))
     return NULL_TREE;
   return vect_gen_perm_mask_checked (vectype, indices);
 }
@@ -2292,6 +2293,37 @@ get_group_load_store_type (vec_info *vinfo, stmt_vec_info stmt_info,
 	    {
 	      gcc_assert (!loop_vinfo || cmp > 0);
 	      *memory_access_type = VMAT_CONTIGUOUS;
+	    }
+
+	  /* When we have a contiguous access across loop iterations
+	     but the access in the loop doesn't cover the full vector
+	     we can end up with no gap recorded but still excess
+	     elements accessed, see PR103116.  Make sure we peel for
+	     gaps if necessary and sufficient and give up if not.  */
+	  if (loop_vinfo
+	      && *memory_access_type == VMAT_CONTIGUOUS
+	      && SLP_TREE_LOAD_PERMUTATION (slp_node).exists ()
+	      && !multiple_p (group_size * LOOP_VINFO_VECT_FACTOR (loop_vinfo),
+			      nunits))
+	    {
+	      unsigned HOST_WIDE_INT cnunits, cvf;
+	      if (!can_overrun_p
+		  || !nunits.is_constant (&cnunits)
+		  || !LOOP_VINFO_VECT_FACTOR (loop_vinfo).is_constant (&cvf)
+		  /* Peeling for gaps assumes that a single scalar iteration
+		     is enough to make sure the last vector iteration doesn't
+		     access excess elements.
+		     ???  Enhancements include peeling multiple iterations
+		     or using masked loads with a static mask.  */
+		  || (group_size * cvf) % cnunits + group_size < cnunits)
+		{
+		  if (dump_enabled_p ())
+		    dump_printf_loc (MSG_MISSED_OPTIMIZATION, vect_location,
+				     "peeling for gaps insufficient for "
+				     "access\n");
+		  return false;
+		}
+	      overrun_p = true;
 	    }
 	}
     }
@@ -3137,7 +3169,8 @@ vectorizable_bswap (vec_info *vinfo,
       elts.quick_push ((i + 1) * word_bytes - j - 1);
 
   vec_perm_indices indices (elts, 1, num_bytes);
-  if (!can_vec_perm_const_p (TYPE_MODE (char_vectype), indices))
+  machine_mode vmode = TYPE_MODE (char_vectype);
+  if (!can_vec_perm_const_p (vmode, vmode, indices))
     return false;
 
   if (! vec_stmt)
@@ -6681,7 +6714,7 @@ scan_store_can_perm_p (tree vectype, tree init,
 	    sel[j] = nunits + k;
 	}
       vec_perm_indices indices (sel, i == units_log2 ? 1 : 2, nunits);
-      if (!can_vec_perm_const_p (vec_mode, indices))
+      if (!can_vec_perm_const_p (vec_mode, vec_mode, indices))
 	{
 	  if (i == units_log2)
 	    return -1;
@@ -8551,7 +8584,8 @@ vect_gen_perm_mask_any (tree vectype, const vec_perm_indices &sel)
 tree
 vect_gen_perm_mask_checked (tree vectype, const vec_perm_indices &sel)
 {
-  gcc_assert (can_vec_perm_const_p (TYPE_MODE (vectype), sel));
+  machine_mode vmode = TYPE_MODE (vectype);
+  gcc_assert (can_vec_perm_const_p (vmode, vmode, sel));
   return vect_gen_perm_mask_any (vectype, sel);
 }
 
@@ -11860,6 +11894,11 @@ vect_maybe_update_slp_op_vectype (slp_tree op, tree vectype)
     return true;
   if (SLP_TREE_VECTYPE (op))
     return types_compatible_p (SLP_TREE_VECTYPE (op), vectype);
+  /* For external defs refuse to produce VECTOR_BOOLEAN_TYPE_P, those
+     should be handled by patters.  Allow vect_constant_def for now.  */
+  if (VECTOR_BOOLEAN_TYPE_P (vectype)
+      && SLP_TREE_DEF_TYPE (op) == vect_external_def)
+    return false;
   SLP_TREE_VECTYPE (op) = vectype;
   return true;
 }

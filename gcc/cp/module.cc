@@ -47,10 +47,14 @@ along with GCC; see the file COPYING3.  If not see
    module-local index.
 
    Each importable DECL contains several flags.  The simple set are
-   DECL_EXPORT_P, DECL_MODULE_PURVIEW_P and DECL_MODULE_IMPORT_P.  The
-   first indicates whether it is exported, the second whether it is in
-   the module purview (as opposed to the global module fragment), and
-   the third indicates whether it was an import into this TU or not.
+   DECL_MODULE_EXPORT_P, DECL_MODULE_PURVIEW_P, DECL_MODULE_ATTACH_P
+   and DECL_MODULE_IMPORT_P.  The first indicates whether it is
+   exported, the second whether it is in module or header-unit
+   purview.  The third indicates it is attached to the named module in
+   whose purview it resides and the fourth indicates whether it was an
+   import into this TU or not.  DECL_MODULE_ATTACH_P will be false for
+   all decls in a header-unit, and for those in a named module inside
+   a linkage declaration.
 
    The more detailed flags are DECL_MODULE_PARTITION_P,
    DECL_MODULE_ENTITY_P.  The first is set in a primary interface unit
@@ -2615,7 +2619,7 @@ depset::entity_kind_name () const
     {"decl", "specialization", "partial", "using",
      "namespace", "redirect", "binding"};
   entity_kind kind = get_entity_kind ();
-  gcc_checking_assert (kind < sizeof (names) / sizeof(names[0]));
+  gcc_checking_assert (kind < ARRAY_SIZE (names));
   return names[kind];
 }
 
@@ -2697,11 +2701,11 @@ pending_map_t *pending_table;
    completed.  */
 vec<tree, va_heap, vl_embed> *post_load_decls;
 
-/* Some entities are attached to another entitity for ODR purposes.
+/* Some entities are keyed to another entitity for ODR purposes.
    For example, at namespace scope, 'inline auto var = []{};', that
-   lambda is attached to 'var', and follows its ODRness.  */
-typedef hash_map<tree, auto_vec<tree>> attached_map_t;
-static attached_map_t *attached_table;
+   lambda is keyed to 'var', and follows its ODRness.  */
+typedef hash_map<tree, auto_vec<tree>> keyed_map_t;
+static keyed_map_t *keyed_table;
 
 /********************************************************************/
 /* Tree streaming.   The tree streaming is very specific to the tree
@@ -2766,7 +2770,7 @@ enum merge_kind
   MK_partial,
 
   MK_enum,	/* Found by CTX, & 1stMemberNAME.  */
-  MK_attached,  /* Found by attachee & index.  */
+  MK_keyed,     /* Found by key & index.  */
 
   MK_friend_spec,  /* Like named, but has a tmpl & args too.  */
   MK_local_friend, /* Found by CTX, index.  */
@@ -2927,7 +2931,7 @@ private:
 public:
   tree decl_container ();
   tree key_mergeable (int tag, merge_kind, tree decl, tree inner, tree type,
-		      tree container, bool is_mod);
+		      tree container, bool is_attached);
   unsigned binfo_mergeable (tree *);
 
 private:
@@ -3778,9 +3782,6 @@ static unsigned loaded_clusters;
 
 /* What the current TU is.  */
 unsigned module_kind;
-
-/* Number of global init calls needed.  */
-unsigned num_init_calls_needed = 0;
 
 /* Global trees.  */
 static const std::pair<tree *, unsigned> global_tree_arys[] =
@@ -5529,11 +5530,13 @@ trees_out::lang_decl_bools (tree t)
   WB (lang->u.base.concept_p);
   WB (lang->u.base.var_declared_inline_p);
   WB (lang->u.base.dependent_init_p);
-  /* When building a header unit, everthing is marked as purview, but
-     that's the GM purview, so not what the importer will mean  */
+  /* When building a header unit, everthing is marked as purview, (so
+     we know which decls to write).  But when we import them we do not
+     want to mark them as in module purview.  */
   WB (lang->u.base.module_purview_p && !header_module_p ());
+  WB (lang->u.base.module_attach_p);
   if (VAR_OR_FUNCTION_DECL_P (t))
-    WB (lang->u.base.module_attached_p);
+    WB (lang->u.base.module_keyed_decls_p);
   switch (lang->u.base.selector)
     {
     default:
@@ -5602,8 +5605,9 @@ trees_in::lang_decl_bools (tree t)
   RB (lang->u.base.var_declared_inline_p);
   RB (lang->u.base.dependent_init_p);
   RB (lang->u.base.module_purview_p);
+  RB (lang->u.base.module_attach_p);
   if (VAR_OR_FUNCTION_DECL_P (t))
-    RB (lang->u.base.module_attached_p);
+    RB (lang->u.base.module_keyed_decls_p);
   switch (lang->u.base.selector)
     {
     default:
@@ -6468,9 +6472,7 @@ trees_in::core_vals (tree t)
 
     case REAL_CST:
       if (const void *bytes = buf (sizeof (real_value)))
-	TREE_REAL_CST_PTR (t)
-	  = reinterpret_cast<real_value *> (memcpy (ggc_alloc<real_value> (),
-						    bytes, sizeof (real_value)));
+	memcpy (TREE_REAL_CST_PTR (t), bytes, sizeof (real_value));
       break;
 
     case STRING_CST:
@@ -7537,14 +7539,14 @@ trees_out::decl_value (tree decl, depset *dep)
 		 or a module entity.  This bool merges into the next block
 		 of bools.  Sneaky.  */
 	      tree o = get_originating_module_decl (decl);
-	      bool is_mod = false;
+	      bool is_attached = false;
 
 	      tree not_tmpl = STRIP_TEMPLATE (o);
 	      if (DECL_LANG_SPECIFIC (not_tmpl)
-		  && DECL_MODULE_PURVIEW_P (not_tmpl))
-		is_mod = true;
+		  && DECL_MODULE_ATTACH_P (not_tmpl))
+		is_attached = true;
 
-	      b (is_mod);
+	      b (is_attached);
 	    }
 	  b (dep && dep->has_defn ());
 	}
@@ -7703,11 +7705,11 @@ trees_out::decl_value (tree decl, depset *dep)
 
   if (VAR_OR_FUNCTION_DECL_P (inner)
       && DECL_LANG_SPECIFIC (inner)
-      && DECL_MODULE_ATTACHMENTS_P (inner)
+      && DECL_MODULE_KEYED_DECLS_P (inner)
       && !is_key_order ())
     {
-      /* Stream the attached entities.  */
-      auto *attach_vec = attached_table->get (inner);
+      /* Stream the keyed entities.  */
+      auto *attach_vec = keyed_table->get (inner);
       unsigned num = attach_vec->length ();
       if (streaming_p ())
 	u (num);
@@ -7793,7 +7795,7 @@ tree
 trees_in::decl_value ()
 {
   int tag = 0;
-  bool is_mod = false;
+  bool is_attached = false;
   bool has_defn = false;
   unsigned mk_u = u ();
   if (mk_u >= MK_hwm || !merge_kind_name[mk_u])
@@ -7814,7 +7816,7 @@ trees_in::decl_value ()
 	{
 	  if (!(mk & MK_template_mask) && !state->is_header ())
 	    /* See note in trees_out about where this bool is sequenced.  */
-	    is_mod = b ();
+	    is_attached = b ();
 
 	  has_defn = b ();
 	}
@@ -7918,7 +7920,8 @@ trees_in::decl_value ()
   if (TREE_CODE (inner) == FUNCTION_DECL)
     parm_tag = fn_parms_init (inner);
 
-  tree existing = key_mergeable (tag, mk, decl, inner, type, container, is_mod);
+  tree existing = key_mergeable (tag, mk, decl, inner, type, container,
+				 is_attached);
   tree existing_inner = existing;
   if (existing)
     {
@@ -8000,12 +8003,12 @@ trees_in::decl_value ()
 
   if (VAR_OR_FUNCTION_DECL_P (inner)
       && DECL_LANG_SPECIFIC (inner)
-      && DECL_MODULE_ATTACHMENTS_P (inner))
+      && DECL_MODULE_KEYED_DECLS_P (inner))
     {
       /* Read and maybe install the attached entities.  */
       bool existed;
-      auto &set = attached_table->get_or_insert (STRIP_TEMPLATE (existing),
-						 &existed);
+      auto &set = keyed_table->get_or_insert (STRIP_TEMPLATE (existing),
+					      &existed);
       unsigned num = u ();
       if (is_new == existed)
 	set_overrun ();
@@ -9340,7 +9343,7 @@ trees_in::tree_node (bool is_use)
 	    if (!get_overrun ())
 	      {
 		tree pack = cxx_make_type (TYPE_ARGUMENT_PACK);
-		SET_ARGUMENT_PACK_ARGS (pack, res);
+		ARGUMENT_PACK_ARGS (pack) = res;
 		res = pack;
 	      }
 	    break;
@@ -9353,7 +9356,7 @@ trees_in::tree_node (bool is_use)
 		{
 		  tree expn = cxx_make_type (TYPE_PACK_EXPANSION);
 		  SET_TYPE_STRUCTURAL_EQUALITY (expn);
-		  SET_PACK_EXPANSION_PATTERN (expn, res);
+		  PACK_EXPANSION_PATTERN (expn) = res;
 		  PACK_EXPANSION_PARAMETER_PACKS (expn) = param_packs;
 		  PACK_EXPANSION_LOCAL_P (expn) = local;
 		  res = expn;
@@ -10202,9 +10205,9 @@ trees_out::get_merge_kind (tree decl, depset *dep)
 		  = LAMBDA_EXPR_EXTRA_SCOPE (CLASSTYPE_LAMBDA_EXPR
 					     (TREE_TYPE (decl))))
 		if (TREE_CODE (scope) == VAR_DECL
-		    && DECL_MODULE_ATTACHMENTS_P (scope))
+		    && DECL_MODULE_KEYED_DECLS_P (scope))
 		  {
-		    mk = MK_attached;
+		    mk = MK_keyed;
 		    break;
 		  }
 
@@ -10494,13 +10497,13 @@ trees_out::key_mergeable (int tag, merge_kind mk, tree decl, tree inner,
 	  }
 	  break;
 
-	case MK_attached:
+	case MK_keyed:
 	  {
 	    gcc_checking_assert (LAMBDA_TYPE_P (TREE_TYPE (inner)));
 	    tree scope = LAMBDA_EXPR_EXTRA_SCOPE (CLASSTYPE_LAMBDA_EXPR
 						  (TREE_TYPE (inner)));
 	    gcc_checking_assert (TREE_CODE (scope) == VAR_DECL);
-	    auto *root = attached_table->get (scope);
+	    auto *root = keyed_table->get (scope);
 	    unsigned ix = root->length ();
 	    /* If we don't find it, we'll write a really big number
 	       that the reader will ignore.  */
@@ -10508,7 +10511,7 @@ trees_out::key_mergeable (int tag, merge_kind mk, tree decl, tree inner,
 	      if ((*root)[ix] == inner)
 		break;
 
-	    /* Use the attached-to decl as the 'name'.  */
+	    /* Use the keyed-to decl as the 'name'.  */
 	    name = scope;
 	    key.index = ix;
 	  }
@@ -10654,7 +10657,7 @@ check_mergeable_decl (merge_kind mk, tree decl, tree ovl, merge_key const &key)
 
 tree
 trees_in::key_mergeable (int tag, merge_kind mk, tree decl, tree inner,
-			 tree type, tree container, bool is_mod)
+			 tree type, tree container, bool is_attached)
 {
   const char *kind = "new";
   tree existing = NULL_TREE;
@@ -10775,12 +10778,12 @@ trees_in::key_mergeable (int tag, merge_kind mk, tree decl, tree inner,
 	    gcc_unreachable ();
 
 	  case NAMESPACE_DECL:
-	    if (mk == MK_attached)
+	    if (mk == MK_keyed)
 	      {
 		if (DECL_LANG_SPECIFIC (name)
 		    && VAR_OR_FUNCTION_DECL_P (name)
-		    && DECL_MODULE_ATTACHMENTS_P (name))
-		  if (auto *set = attached_table->get (name))
+		    && DECL_MODULE_KEYED_DECLS_P (name))
+		  if (auto *set = keyed_table->get (name))
 		    if (key.index < set->length ())
 		      {
 			existing = (*set)[key.index];
@@ -10794,14 +10797,15 @@ trees_in::key_mergeable (int tag, merge_kind mk, tree decl, tree inner,
 			  }
 		      }
 	      }
-	    else if (is_mod && !(state->is_module () || state->is_partition ()))
+	    else if (is_attached
+		     && !(state->is_module () || state->is_partition ()))
 	      kind = "unique";
 	    else
 	      {
 		gcc_checking_assert (mk == MK_named || mk == MK_enum);
 		tree mvec;
 		tree *vslot = mergeable_namespace_slots (container, name,
-							 !is_mod, &mvec);
+							 is_attached, &mvec);
 		existing = check_mergeable_decl (mk, decl, *vslot, key);
 		if (!existing)
 		  add_mergeable_namespace_entity (vslot, decl);
@@ -10809,7 +10813,7 @@ trees_in::key_mergeable (int tag, merge_kind mk, tree decl, tree inner,
 		  {
 		    /* Note that we now have duplicates to deal with in
 		       name lookup.  */
-		    if (is_mod)
+		    if (is_attached)
 		      BINDING_VECTOR_PARTITION_DUPS_P (mvec) = true;
 		    else
 		      BINDING_VECTOR_GLOBAL_DUPS_P (mvec) = true;
@@ -10826,7 +10830,7 @@ trees_in::key_mergeable (int tag, merge_kind mk, tree decl, tree inner,
 	    break;
 
 	  case TYPE_DECL:
-	    if (is_mod && !(state->is_module () || state->is_partition ())
+	    if (is_attached && !(state->is_module () || state->is_partition ())
 		/* Implicit member functions can come from
 		   anywhere.  */
 		&& !(DECL_ARTIFICIAL (decl)
@@ -18391,14 +18395,11 @@ get_originating_module (tree decl, bool for_mangle)
   if (!DECL_LANG_SPECIFIC (not_tmpl))
     return for_mangle ? -1 : 0;
 
-  if (for_mangle && !DECL_MODULE_PURVIEW_P (not_tmpl))
+  if (for_mangle && !DECL_MODULE_ATTACH_P (not_tmpl))
     return -1;
 
   int mod = !DECL_MODULE_IMPORT_P (not_tmpl) ? 0 : get_importing_module (owner);
-
-  if (for_mangle && (*modules)[mod]->is_header ())
-    return -1;
-
+  gcc_checking_assert (!for_mangle || !(*modules)[mod]->is_header ());
   return mod;
 }
 
@@ -18418,9 +18419,34 @@ get_importing_module (tree decl, bool flexible)
 bool
 module_may_redeclare (tree decl)
 {
+  for (;;)
+    {
+      tree ctx = CP_DECL_CONTEXT (decl);
+      if (TREE_CODE (ctx) == NAMESPACE_DECL)
+	// Found the namespace-scope decl.
+	break;
+      if (!CLASS_TYPE_P (ctx))
+	// We've met a non-class scope.  Such a thing is not
+	// reopenable, so we must be ok.
+	return true;
+      decl = TYPE_NAME (ctx);
+    }
+
+  tree not_tmpl = STRIP_TEMPLATE (decl);
+
+  int use_tpl = 0;
+  if (node_template_info (not_tmpl, use_tpl) && use_tpl)
+    // Specializations of any kind can be redeclared anywhere.
+    // FIXME: Should we be checking this in more places on the scope chain?
+    return true;
+
+  if (!DECL_LANG_SPECIFIC (not_tmpl) || !DECL_MODULE_ATTACH_P (not_tmpl))
+    // Decl is attached to global module.  Current scope needs to be too.
+    return !module_attach_p ();
+
   module_state *me = (*modules)[0];
   module_state *them = me;
-  tree not_tmpl = STRIP_TEMPLATE (decl);
+
   if (DECL_LANG_SPECIFIC (not_tmpl) && DECL_MODULE_IMPORT_P (not_tmpl))
     {
       /* We can be given the TEMPLATE_RESULT.  We want the
@@ -18448,30 +18474,14 @@ module_may_redeclare (tree decl)
       them = import_entity_module (index);
     }
 
-  if (them->is_header ())
-    {
-      if (!header_module_p ())
-	return !module_purview_p ();
+  // Decl is attached to named module.  Current scope needs to be
+  // attaching to the same module.
+  if (!module_attach_p ())
+    return false;
 
-      if (DECL_SOURCE_LOCATION (decl) == BUILTINS_LOCATION)
-	/* This is a builtin, being declared in header-unit.  We
-	   now need to mark it as an export.  */
-	DECL_MODULE_EXPORT_P (decl) = true;
-
-      /* If it came from a header, it's in the global module.  */
-      return true;
-    }
-
+  // Both attached to named module.
   if (me == them)
-    return ((DECL_LANG_SPECIFIC (not_tmpl) && DECL_MODULE_PURVIEW_P (not_tmpl))
-	    == module_purview_p ());
-
-  if (!me->name)
-    me = me->parent;
-
-  /* We can't have found a GMF entity from a named module.  */
-  gcc_checking_assert (DECL_LANG_SPECIFIC (not_tmpl)
-		       && DECL_MODULE_PURVIEW_P (not_tmpl));
+    return true;
 
   return me && get_primary (them) == get_primary (me);
 }
@@ -18556,10 +18566,16 @@ set_originating_module (tree decl, bool friend_p ATTRIBUTE_UNUSED)
 {
   set_instantiating_module (decl);
 
-  if (TREE_CODE (CP_DECL_CONTEXT (decl)) != NAMESPACE_DECL)
+  if (!DECL_NAMESPACE_SCOPE_P (decl))
     return;
 
   gcc_checking_assert (friend_p || decl == get_originating_module_decl (decl));
+
+  if (module_attach_p ())
+    {
+      retrofit_lang_decl (decl);
+      DECL_MODULE_ATTACH_P (decl) = true;
+    }
 
   if (!module_exporting_p ())
     return;
@@ -18568,10 +18584,10 @@ set_originating_module (tree decl, bool friend_p ATTRIBUTE_UNUSED)
   DECL_MODULE_EXPORT_P (decl) = true;
 }
 
-/* DECL is attached to ROOT for odr purposes.  */
+/* DECL is keyed to CTX for odr purposes.  */
 
 void
-maybe_attach_decl (tree ctx, tree decl)
+maybe_key_decl (tree ctx, tree decl)
 {
   if (!modules_p ())
     return;
@@ -18583,14 +18599,14 @@ maybe_attach_decl (tree ctx, tree decl)
 
   gcc_checking_assert (DECL_NAMESPACE_SCOPE_P (ctx));
 
- if (!attached_table)
-    attached_table = new attached_map_t (EXPERIMENT (1, 400));
+ if (!keyed_table)
+    keyed_table = new keyed_map_t (EXPERIMENT (1, 400));
 
- auto &vec = attached_table->get_or_insert (ctx);
+ auto &vec = keyed_table->get_or_insert (ctx);
  if (!vec.length ())
    {
      retrofit_lang_decl (ctx);
-     DECL_MODULE_ATTACHMENTS_P (ctx) = true;
+     DECL_MODULE_KEYED_DECLS_P (ctx) = true;
    }
  vec.safe_push (decl);
 }
@@ -18900,8 +18916,8 @@ direct_import (module_state *import, cpp_reader *reader)
 
   if (import->loadedness < ML_LANGUAGE)
     {
-      if (!attached_table)
-	attached_table = new attached_map_t (EXPERIMENT (1, 400));
+      if (!keyed_table)
+	keyed_table = new keyed_map_t (EXPERIMENT (1, 400));
       import->read_language (true);
     }
 
@@ -18973,25 +18989,21 @@ declare_module (module_state *module, location_t from_loc, bool exporting_p,
   gcc_checking_assert (module->is_direct () && module->has_location ());
 
   /* Yer a module, 'arry.  */
-  module_kind &= ~MK_GLOBAL;
-  module_kind |= MK_MODULE;
+  module_kind = module->is_header () ? MK_HEADER : MK_NAMED | MK_ATTACH;
 
-  if (module->is_partition () || exporting_p)
+  // Even in header units, we consider the decls to be purview
+  module_kind |= MK_PURVIEW;
+
+  if (module->is_partition ())
+    module_kind |= MK_PARTITION;
+  if (exporting_p)
     {
-      gcc_checking_assert (module->get_flatname ());
+      module->interface_p = true;
+      module_kind |= MK_INTERFACE;
+    }
 
-      if (module->is_partition ())
-	module_kind |= MK_PARTITION;
-
-      if (exporting_p)
-	{
-	  module->interface_p = true;
-	  module_kind |= MK_INTERFACE;
-	}
-
-      if (module->is_header ())
-	module_kind |= MK_GLOBAL | MK_EXPORTING;
-
+  if (module_has_cmi_p ())
+    {
       /* Copy the importing information we may have already done.  We
 	 do not need to separate out the imports that only happen in
 	 the GMF, inspite of what the literal wording of the std
@@ -19011,22 +19023,52 @@ declare_module (module_state *module, location_t from_loc, bool exporting_p,
     }
 }
 
-/* +1, we're the primary or a partition.  Therefore emitting a
-   globally-callable idemportent initializer function.
-   -1, we have direct imports.  Therefore emitting calls to their
-   initializers.  */
+/* Return true IFF we must emit a module global initializer function
+   (which will be called by importers' init code).  */
 
-int
-module_initializer_kind ()
+bool
+module_global_init_needed ()
 {
-  int result = 0;
+  return module_has_cmi_p () && !header_module_p ();
+}
 
-  if (module_has_cmi_p () && !header_module_p ())
-    result = +1;
-  else if (num_init_calls_needed)
-    result = -1;
+/* Calculate which, if any, import initializers need calling.  */
 
-  return result;
+bool
+module_determine_import_inits ()
+{
+  if (!modules || header_module_p ())
+    return false;
+
+  /* Determine call_init_p.  We need the same bitmap allocation
+     scheme as for the imports member.  */
+  function_depth++; /* Disable GC.  */
+  bitmap indirect_imports (BITMAP_GGC_ALLOC ());
+
+  bool any = false;
+
+  /* Because indirect imports are before their direct import, and
+     we're scanning the array backwards, we only need one pass!  */
+  for (unsigned ix = modules->length (); --ix;)
+    {
+      module_state *import = (*modules)[ix];
+
+      if (!import->is_header ()
+	  && !bitmap_bit_p (indirect_imports, ix))
+	{
+	  /* Everything this imports is therefore indirectly
+	     imported.  */
+	  bitmap_ior_into (indirect_imports, import->imports);
+	  /* We don't have to worry about the self-import bit,
+	     because of the single pass.  */
+
+	  import->call_init_p = true;
+	  any = true;
+	}
+    }
+  function_depth--;
+
+  return any;
 }
 
 /* Emit calls to each direct import's global initializer.  Including
@@ -19040,35 +19082,30 @@ module_initializer_kind ()
 void
 module_add_import_initializers ()
 {
-  unsigned calls = 0;
-  if (modules)
+  if (!modules || header_module_p ())
+    return;
+
+  tree fntype = build_function_type (void_type_node, void_list_node);
+  releasing_vec args;  // There are no args
+
+  for (unsigned ix = modules->length (); --ix;)
     {
-      tree fntype = build_function_type (void_type_node, void_list_node);
-      releasing_vec args;  // There are no args
-
-      for (unsigned ix = modules->length (); --ix;)
+      module_state *import = (*modules)[ix];
+      if (import->call_init_p)
 	{
-	  module_state *import = (*modules)[ix];
-	  if (import->call_init_p)
-	    {
-	      tree name = mangle_module_global_init (ix);
-	      tree fndecl = build_lang_decl (FUNCTION_DECL, name, fntype);
+	  tree name = mangle_module_global_init (ix);
+	  tree fndecl = build_lang_decl (FUNCTION_DECL, name, fntype);
 
-	      DECL_CONTEXT (fndecl) = FROB_CONTEXT (global_namespace);
-	      SET_DECL_ASSEMBLER_NAME (fndecl, name);
-	      TREE_PUBLIC (fndecl) = true;
-	      determine_visibility (fndecl);
+	  DECL_CONTEXT (fndecl) = FROB_CONTEXT (global_namespace);
+	  SET_DECL_ASSEMBLER_NAME (fndecl, name);
+	  TREE_PUBLIC (fndecl) = true;
+	  determine_visibility (fndecl);
 
-	      tree call = cp_build_function_call_vec (fndecl, &args,
-						      tf_warning_or_error);
-	      finish_expr_stmt (call);
-	      
-	      calls++;
-	    }
+	  tree call = cp_build_function_call_vec (fndecl, &args,
+						  tf_warning_or_error);
+	  finish_expr_stmt (call);
 	}
     }
-
-  gcc_checking_assert (calls == num_init_calls_needed);
 }
 
 /* NAME & LEN are a preprocessed header name, possibly including the
@@ -19525,6 +19562,7 @@ preprocessed_module (cpp_reader *reader)
 	  if (module->is_module ())
 	    {
 	      declare_module (module, cpp_main_loc (reader), true, NULL, reader);
+	      module_kind |= MK_EXPORTING;
 	      break;
 	    }
 	}
@@ -19816,11 +19854,32 @@ maybe_check_all_macros (cpp_reader *reader)
   dump.pop (n);
 }
 
+// State propagated from finish_module_processing to fini_modules
+struct module_processing_cookie
+{
+  elf_out out;
+  char *cmi_name;
+  char *tmp_name;
+  bool began;
+
+  module_processing_cookie (char *cmi, char *tmp, int fd, int e)
+    : out (fd, e), cmi_name (cmi), tmp_name (tmp), began (false)
+  {
+  }
+  ~module_processing_cookie ()
+  {
+    XDELETEVEC (tmp_name);
+    XDELETEVEC (cmi_name);
+  }
+};
+
 /* Write the CMI, if we're a module interface.  */
 
-void
+void *
 finish_module_processing (cpp_reader *reader)
 {
+  module_processing_cookie *cookie = nullptr;
+
   if (header_module_p ())
     module_kind &= ~MK_EXPORTING;
 
@@ -19832,7 +19891,7 @@ finish_module_processing (cpp_reader *reader)
   else if (!flag_syntax_only)
     {
       int fd = -1;
-      int e = ENOENT;
+      int e = -1;
 
       timevar_start (TV_MODULE_EXPORT);
 
@@ -19841,7 +19900,7 @@ finish_module_processing (cpp_reader *reader)
       linemap_add (line_table, LC_ENTER, false, "", 0);
 
       /* We write to a tmpname, and then atomically rename.  */
-      const char *path = NULL;
+      char *cmi_name = NULL;
       char *tmp_name = NULL;
       module_state *state = (*modules)[0];
 
@@ -19850,9 +19909,9 @@ finish_module_processing (cpp_reader *reader)
       if (state->filename)
 	{
 	  size_t len = 0;
-	  path = maybe_add_cmi_prefix (state->filename, &len);
+	  cmi_name = xstrdup (maybe_add_cmi_prefix (state->filename, &len));
 	  tmp_name = XNEWVEC (char, len + 3);
-	  memcpy (tmp_name, path, len);
+	  memcpy (tmp_name, cmi_name, len);
 	  strcpy (&tmp_name[len], "~");
 
 	  if (!errorcount)
@@ -19867,57 +19926,23 @@ finish_module_processing (cpp_reader *reader)
 		create_dirs (tmp_name);
 	      }
 	  if (note_module_cmi_yes || state->inform_cmi_p)
-	    inform (state->loc, "writing CMI %qs", path);
-	  dump () && dump ("CMI is %s", path);
+	    inform (state->loc, "writing CMI %qs", cmi_name);
+	  dump () && dump ("CMI is %s", cmi_name);
 	}
+
+      cookie = new module_processing_cookie (cmi_name, tmp_name, fd, e);
 
       if (errorcount)
 	warning_at (state->loc, 0, "not writing module %qs due to errors",
 		    state->get_flatname ());
-      else
+      else if (cookie->out.begin ())
 	{
-	  elf_out to (fd, e);
-	  if (to.begin ())
-	    {
-	      auto loc = input_location;
-	      /* So crashes finger-point the module decl.  */
-	      input_location = state->loc;
-	      state->write (&to, reader);
-	      input_location = loc;
-	    }
-	  if (to.end ())
-	    {
-	      /* Some OS's do not replace NEWNAME if it already
-		 exists.  This'll have a race condition in erroneous
-		 concurrent builds.  */
-	      unlink (path);
-	      if (rename (tmp_name, path))
-		{
-		  dump () && dump ("Rename ('%s','%s') errno=%u", errno);
-		  to.set_error (errno);
-		}
-	    }
-
-	  if (to.get_error ())
-	    {
-	      error_at (state->loc, "failed to write compiled module: %s",
-			to.get_error (state->filename));
-	      state->note_cmi_name ();
-	    }
-	}
-
-      if (!errorcount)
-	{
-	  auto *mapper = get_mapper (cpp_main_loc (reader));
-
-	  mapper->ModuleCompiled (state->get_flatname ());
-	}
-      else if (path)
-	{
-	  /* We failed, attempt to erase all evidence we even tried.  */
-	  unlink (tmp_name);
-	  unlink (path);
-	  XDELETEVEC (tmp_name);
+	  cookie->began = true;
+	  auto loc = input_location;
+	  /* So crashes finger-point the module decl.  */
+	  input_location = state->loc;
+	  state->write (&cookie->out, reader);
+	  input_location = loc;
 	}
 
       dump.pop (n);
@@ -19937,39 +19962,66 @@ finish_module_processing (cpp_reader *reader)
       dump.pop (n);
     }
 
-  if (modules && !header_module_p ())
+  return cookie;
+}
+
+// Do the final emission of a module.  At this point we know whether
+// the module static initializer is a NOP or not.
+
+static void
+late_finish_module (cpp_reader *reader, module_processing_cookie *cookie)
+{
+  timevar_start (TV_MODULE_EXPORT);
+
+  module_state *state = (*modules)[0];
+  unsigned n = dump.push (state);
+  state->announce ("finishing");
+
+  if (cookie->out.end () && cookie->cmi_name)
     {
-      /* Determine call_init_p.  We need the same bitmap allocation
-         scheme as for the imports member.  */
-      function_depth++; /* Disable GC.  */
-      bitmap indirect_imports (BITMAP_GGC_ALLOC ());
-
-      /* Because indirect imports are before their direct import, and
-	 we're scanning the array backwards, we only need one pass!  */
-      for (unsigned ix = modules->length (); --ix;)
+      /* Some OS's do not replace NEWNAME if it already exists.
+	 This'll have a race condition in erroneous concurrent
+	 builds.  */
+      unlink (cookie->cmi_name);
+      if (rename (cookie->tmp_name, cookie->cmi_name))
 	{
-	  module_state *import = (*modules)[ix];
-
-	  if (!import->is_header ()
-	      && !bitmap_bit_p (indirect_imports, ix))
-	    {
-	      /* Everything this imports is therefore indirectly
-		 imported.  */
-	      bitmap_ior_into (indirect_imports, import->imports);
-	      /* We don't have to worry about the self-import bit,
-		 because of the single pass.  */
-
-	      import->call_init_p = true;
-	      num_init_calls_needed++;
-	    }
+	  dump () && dump ("Rename ('%s','%s') errno=%u",
+			   cookie->tmp_name, cookie->cmi_name, errno);
+	  cookie->out.set_error (errno);
 	}
-      function_depth--;
     }
+
+  if (cookie->out.get_error () && cookie->began)
+    {
+      error_at (state->loc, "failed to write compiled module: %s",
+		cookie->out.get_error (state->filename));
+      state->note_cmi_name ();
+    }
+
+  if (!errorcount)
+    {
+      auto *mapper = get_mapper (cpp_main_loc (reader));
+      mapper->ModuleCompiled (state->get_flatname ());
+    }
+  else if (cookie->cmi_name)
+    {
+      /* We failed, attempt to erase all evidence we even tried.  */
+      unlink (cookie->tmp_name);
+      unlink (cookie->cmi_name);
+    }
+
+  delete cookie;
+  dump.pop (n);
+  timevar_stop (TV_MODULE_EXPORT);
 }
 
 void
-fini_modules ()
+fini_modules (cpp_reader *reader, void *cookie)
 {
+  if (cookie)
+    late_finish_module (reader,
+			static_cast<module_processing_cookie *> (cookie));
+
   /* We're done with the macro tables now.  */
   vec_free (macro_exports);
   vec_free (macro_imports);
@@ -20006,9 +20058,9 @@ fini_modules ()
   delete pending_table;
   pending_table = NULL;
 
-  /* Or any attachments -- Let it go!  */
-  delete attached_table;
-  attached_table = NULL;
+  /* Or any keys -- Let it go!  */
+  delete keyed_table;
+  keyed_table = NULL;
 
   /* Allow a GC, we've possibly made much data unreachable.  */
   ggc_collect ();

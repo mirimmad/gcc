@@ -38,9 +38,9 @@ along with GCC; see the file COPYING3.  If not see
 #include "fold-const.h"
 #include "stor-layout.h"
 #include "cfganal.h"
+#include "gimple-iterator.h"
 #include "gimple-fold.h"
 #include "tree-eh.h"
-#include "gimple-iterator.h"
 #include "gimplify-me.h"
 #include "tree-cfg.h"
 #include "tree-ssa-loop.h"
@@ -2254,7 +2254,11 @@ eliminate_redundant_comparison (enum tree_code opcode,
 	 BIT_AND_EXPR or BIT_IOR_EXPR was of a wider integer type,
 	 we need to convert.  */
       if (!useless_type_conversion_p (TREE_TYPE (curr->op), TREE_TYPE (t)))
-	t = fold_convert (TREE_TYPE (curr->op), t);
+	{
+	  if (!fold_convertible_p (TREE_TYPE (curr->op), t))
+	    continue;
+	  t = fold_convert (TREE_TYPE (curr->op), t);
+	}
 
       if (TREE_CODE (t) != INTEGER_CST
 	  && !operand_equal_p (t, curr->op, 0))

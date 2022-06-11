@@ -21,6 +21,8 @@ along with GCC; see the file COPYING3.  If not see
 #ifndef GCC_ANALYZER_CHECKER_PATH_H
 #define GCC_ANALYZER_CHECKER_PATH_H
 
+#include "tree-logical-location.h"
+
 namespace ana {
 
 /* An enum for discriminating between the concrete subclasses of
@@ -85,15 +87,24 @@ public:
   checker_event (enum event_kind kind,
 		 location_t loc, tree fndecl, int depth)
     : m_kind (kind), m_loc (loc), m_fndecl (fndecl), m_depth (depth),
-      m_pending_diagnostic (NULL), m_emission_id ()
+      m_pending_diagnostic (NULL), m_emission_id (),
+      m_logical_loc (fndecl)
   {
   }
 
   /* Implementation of diagnostic_event.  */
 
-  location_t get_location () const FINAL OVERRIDE { return m_loc; }
-  tree get_fndecl () const FINAL OVERRIDE { return m_fndecl; }
-  int get_stack_depth () const FINAL OVERRIDE { return m_depth; }
+  location_t get_location () const final override { return m_loc; }
+  tree get_fndecl () const final override { return m_fndecl; }
+  int get_stack_depth () const final override { return m_depth; }
+  const logical_location *get_logical_location () const final override
+  {
+    if (m_fndecl)
+      return &m_logical_loc;
+    else
+      return NULL;
+  }
+  meaning get_meaning () const override;
 
   /* Additional functionality.  */
 
@@ -122,6 +133,7 @@ public:
   int m_depth;
   pending_diagnostic *m_pending_diagnostic;
   diagnostic_event_id_t m_emission_id; // only set once all pruning has occurred
+  tree_logical_location m_logical_loc;
 };
 
 /* A concrete event subclass for a purely textual event, for use in
@@ -141,7 +153,7 @@ public:
     free (m_desc);
   }
 
-  label_text get_desc (bool) const FINAL OVERRIDE;
+  label_text get_desc (bool) const final override;
 
 private:
   char *m_desc;
@@ -175,7 +187,7 @@ public:
     free (m_desc);
   }
 
-  label_text get_desc (bool) const FINAL OVERRIDE;
+  label_text get_desc (bool) const final override;
 
 private:
   char *m_desc;
@@ -190,7 +202,7 @@ public:
   statement_event (const gimple *stmt, tree fndecl, int depth,
 		   const program_state &dst_state);
 
-  label_text get_desc (bool) const FINAL OVERRIDE;
+  label_text get_desc (bool) const final override;
 
   const gimple * const m_stmt;
   const program_state m_dst_state;
@@ -205,7 +217,7 @@ public:
   region_creation_event (const region *reg,
 			 location_t loc, tree fndecl, int depth);
 
-  label_text get_desc (bool) const FINAL OVERRIDE;
+  label_text get_desc (bool) const final override;
 
 private:
   const region *m_reg;
@@ -221,9 +233,10 @@ public:
   {
   }
 
-  label_text get_desc (bool can_colorize) const FINAL OVERRIDE;
+  label_text get_desc (bool can_colorize) const final override;
+  meaning get_meaning () const override;
 
-  bool is_function_entry_p () const FINAL OVERRIDE { return true; }
+  bool is_function_entry_p () const final override { return true; }
 };
 
 /* Subclass of checker_event describing a state change.  */
@@ -240,7 +253,8 @@ public:
 		      const svalue *origin,
 		      const program_state &dst_state);
 
-  label_text get_desc (bool can_colorize) const FINAL OVERRIDE;
+  label_text get_desc (bool can_colorize) const final override;
+  meaning get_meaning () const override;
 
   function *get_dest_function () const
   {
@@ -295,6 +309,8 @@ public:
 class cfg_edge_event : public superedge_event
 {
 public:
+  meaning get_meaning () const override;
+
   const cfg_superedge& get_cfg_superedge () const;
 
  protected:
@@ -314,7 +330,7 @@ public:
   {
   }
 
-  label_text get_desc (bool can_colorize) const FINAL OVERRIDE;
+  label_text get_desc (bool can_colorize) const final override;
 
  private:
   label_text maybe_describe_condition (bool can_colorize) const;
@@ -338,7 +354,7 @@ public:
   {
   }
 
-  label_text get_desc (bool /*can_colorize*/) const FINAL OVERRIDE
+  label_text get_desc (bool /*can_colorize*/) const final override
   {
     return label_text::borrow ("...to here");
   }
@@ -352,9 +368,14 @@ public:
   call_event (const exploded_edge &eedge,
 	      location_t loc, tree fndecl, int depth);
 
-  label_text get_desc (bool can_colorize) const FINAL OVERRIDE;
+  label_text get_desc (bool can_colorize) const override;
+  meaning get_meaning () const override;
 
-  bool is_call_p () const FINAL OVERRIDE;
+  bool is_call_p () const final override;
+
+protected:
+  tree get_caller_fndecl () const;
+  tree get_callee_fndecl () const;
 
   const supernode *m_src_snode;
   const supernode *m_dest_snode;
@@ -368,9 +389,10 @@ public:
   return_event (const exploded_edge &eedge,
 		location_t loc, tree fndecl, int depth);
 
-  label_text get_desc (bool can_colorize) const FINAL OVERRIDE;
+  label_text get_desc (bool can_colorize) const final override;
+  meaning get_meaning () const override;
 
-  bool is_return_p () const FINAL OVERRIDE;
+  bool is_return_p () const final override;
 
   const supernode *m_src_snode;
   const supernode *m_dest_snode;
@@ -389,7 +411,8 @@ public:
   {
   }
 
-  label_text get_desc (bool can_colorize) const FINAL OVERRIDE;
+  label_text get_desc (bool can_colorize) const final override;
+  meaning get_meaning () const override;
 
  private:
   bool m_edge_sense;
@@ -406,7 +429,7 @@ public:
   {
   }
 
-  label_text get_desc (bool /*can_colorize*/) const FINAL OVERRIDE
+  label_text get_desc (bool /*can_colorize*/) const final override
   {
     return label_text::borrow ("...to here");
   }
@@ -424,11 +447,11 @@ public:
   {
   }
 
-  label_text get_desc (bool can_colorize) const FINAL OVERRIDE;
+  label_text get_desc (bool can_colorize) const final override;
 
   void prepare_for_emission (checker_path *path,
 			     pending_diagnostic *pd,
-			     diagnostic_event_id_t emission_id) FINAL OVERRIDE;
+			     diagnostic_event_id_t emission_id) final override;
 
 private:
   const exploded_node *m_enode;
@@ -473,7 +496,7 @@ public:
   {
   }
 
-  label_text get_desc (bool can_colorize) const FINAL OVERRIDE;
+  label_text get_desc (bool can_colorize) const final override;
 };
 
 /* A concrete event subclass for rewinding from a longjmp to a setjmp,
@@ -490,11 +513,11 @@ public:
   {
   }
 
-  label_text get_desc (bool can_colorize) const FINAL OVERRIDE;
+  label_text get_desc (bool can_colorize) const final override;
 
   void prepare_for_emission (checker_path *path,
 			     pending_diagnostic *pd,
-			     diagnostic_event_id_t emission_id) FINAL OVERRIDE;
+			     diagnostic_event_id_t emission_id) final override;
 
 private:
   diagnostic_event_id_t m_original_setjmp_event_id;
@@ -516,7 +539,8 @@ public:
   {
   }
 
-  label_text get_desc (bool can_colorize) const FINAL OVERRIDE;
+  label_text get_desc (bool can_colorize) const final override;
+  meaning get_meaning () const override;
 
 private:
   const state_machine *m_sm;
@@ -533,12 +557,12 @@ public:
 
   /* Implementation of diagnostic_path vfuncs.  */
 
-  unsigned num_events () const FINAL OVERRIDE
+  unsigned num_events () const final override
   {
     return m_events.length ();
   }
 
-  const diagnostic_event & get_event (int idx) const FINAL OVERRIDE
+  const diagnostic_event & get_event (int idx) const final override
   {
     return *m_events[idx];
   }

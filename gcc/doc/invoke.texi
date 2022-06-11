@@ -301,7 +301,7 @@ Objective-C and Objective-C++ Dialects}.
 -fdiagnostics-show-location=@r{[}once@r{|}every-line@r{]}  @gol
 -fdiagnostics-color=@r{[}auto@r{|}never@r{|}always@r{]}  @gol
 -fdiagnostics-urls=@r{[}auto@r{|}never@r{|}always@r{]}  @gol
--fdiagnostics-format=@r{[}text@r{|}json@r{]}  @gol
+-fdiagnostics-format=@r{[}text@r{|}sarif-stderr@r{|}sarif-file@r{|}json@r{|}json-stderr@r{|}json-file@r{]}  @gol
 -fno-diagnostics-show-option  -fno-diagnostics-show-caret @gol
 -fno-diagnostics-show-labels  -fno-diagnostics-show-line-numbers @gol
 -fno-diagnostics-show-cwe  @gol
@@ -349,6 +349,7 @@ Objective-C and Objective-C++ Dialects}.
 -Wno-div-by-zero  -Wdouble-promotion @gol
 -Wduplicated-branches  -Wduplicated-cond @gol
 -Wempty-body  -Wno-endif-labels  -Wenum-compare  -Wenum-conversion @gol
+-Wenum-int-mismatch @gol
 -Werror  -Werror=*  -Wexpansion-to-defined  -Wfatal-errors @gol
 -Wfloat-conversion  -Wfloat-equal  -Wformat  -Wformat=2 @gol
 -Wno-format-contains-nul  -Wno-format-extra-args  @gol
@@ -464,6 +465,10 @@ Objective-C and Objective-C++ Dialects}.
 -Wno-analyzer-use-after-free @gol
 -Wno-analyzer-use-of-pointer-in-stale-stack-frame @gol
 -Wno-analyzer-use-of-uninitialized-value @gol
+-Wno-analyzer-va-arg-type-mismatch @gol
+-Wno-analyzer-va-list-exhausted @gol
+-Wno-analyzer-va-list-leak @gol
+-Wno-analyzer-va-list-use-after-va-end @gol
 -Wno-analyzer-write-to-const @gol
 -Wno-analyzer-write-to-string-literal @gol
 }
@@ -854,12 +859,12 @@ Objective-C and Objective-C++ Dialects}.
 -msim  -msdata=@var{sdata-type}}
 
 @emph{CRIS Options}
-@gccoptlist{-mcpu=@var{cpu}  -march=@var{cpu}  -mtune=@var{cpu} @gol
--mmax-stack-frame=@var{n}  -melinux-stacksize=@var{n} @gol
+@gccoptlist{-mcpu=@var{cpu}  -march=@var{cpu}
+-mtune=@var{cpu} -mmax-stack-frame=@var{n} @gol
 -metrax4  -metrax100  -mpdebug  -mcc-init  -mno-side-effects @gol
 -mstack-align  -mdata-align  -mconst-align @gol
--m32-bit  -m16-bit  -m8-bit  -mno-prologue-epilogue  -mno-gotplt @gol
--melf  -maout  -melinux  -mlinux  -sim  -sim2 @gol
+-m32-bit  -m16-bit  -m8-bit  -mno-prologue-epilogue @gol
+-melf  -maout  -sim  -sim2 @gol
 -mmul-bug-workaround  -mno-mul-bug-workaround}
 
 @emph{CR16 Options}
@@ -1420,7 +1425,8 @@ See RS/6000 and PowerPC Options.
 -msse4a  -m3dnow  -m3dnowa  -mpopcnt  -mabm  -mbmi  -mtbm  -mfma4  -mxop @gol
 -madx  -mlzcnt  -mbmi2  -mfxsr  -mxsave  -mxsaveopt  -mrtm  -mhle  -mlwp @gol
 -mmwaitx  -mclzero  -mpku  -mthreads  -mgfni  -mvaes  -mwaitpkg @gol
--mshstk -mmanual-endbr -mforce-indirect-call  -mavx512vbmi2 -mavx512bf16 -menqcmd @gol
+-mshstk -mmanual-endbr -mcet-switch -mforce-indirect-call @gol
+-mavx512vbmi2 -mavx512bf16 -menqcmd @gol
 -mvpclmulqdq  -mavx512bitalg  -mmovdiri  -mmovdir64b  -mavx512vpopcntdq @gol
 -mavx5124fmaps  -mavx512vnni  -mavx5124vnniw  -mprfchw  -mrdpid @gol
 -mrdseed  -msgx -mavx512vp2intersect -mserialize -mtsxldtrk@gol
@@ -4845,7 +4851,7 @@ The default @env{GCC_COLORS} is
 error=01;31:warning=01;35:note=01;36:range1=32:range2=34:locus=01:\
 quote=01:path=01;36:fixit-insert=32:fixit-delete=31:\
 diff-filename=01:diff-hunk=32:diff-delete=31:diff-insert=32:\
-type-diff=01;32
+type-diff=01;32:fnname=01;32:targs=35
 @end smallexample
 @noindent
 where @samp{01;31} is bold red, @samp{01;35} is bold magenta,
@@ -4889,6 +4895,14 @@ SGR substring for location information, @samp{file:line} or
 @item quote=
 @vindex quote GCC_COLORS @r{capability}
 SGR substring for information printed within quotes.
+
+@item fnname=
+@vindex fnname GCC_COLORS @r{capability}
+SGR substring for names of C++ functions.
+
+@item targs=
+@vindex targs GCC_COLORS @r{capability}
+SGR substring for C++ function template parameter bindings.
 
 @item fixit-insert=
 @vindex fixit-insert GCC_COLORS @r{capability}
@@ -5291,14 +5305,23 @@ Unicode characters.  For the example above, the following will be printed:
 @item -fdiagnostics-format=@var{FORMAT}
 @opindex fdiagnostics-format
 Select a different format for printing diagnostics.
-@var{FORMAT} is @samp{text} or @samp{json}.
+@var{FORMAT} is @samp{text}, @samp{sarif-stderr}, @samp{sarif-file},
+@samp{json}, @samp{json-stderr}, or @samp{json-file}.
+
 The default is @samp{text}.
 
-The @samp{json} format consists of a top-level JSON array containing JSON
-objects representing the diagnostics.
+The @samp{sarif-stderr} and @samp{sarif-file} formats both emit
+diagnostics in SARIF Version 2.1.0 format, either to stderr, or to a file
+named @file{@var{source}.sarif}, respectively.
 
-The JSON is emitted as one line, without formatting; the examples below
-have been formatted for clarity.
+The @samp{json} format is a synonym for @samp{json-stderr}.
+The @samp{json-stderr} and @samp{json-file} formats are identical, apart from
+where the JSON is emitted to - with the former, the JSON is emitted to stderr,
+whereas with @samp{json-file} it is written to @file{@var{source}.gcc.json}.
+
+The emitted JSON consists of a top-level JSON array containing JSON objects
+representing the diagnostics.  The JSON is emitted as one line, without
+formatting; the examples below have been formatted for clarity.
 
 Diagnostics can have child diagnostics.  For example, this error and note:
 
@@ -5747,6 +5770,7 @@ Options} and @ref{Objective-C and Objective-C++ Dialect Options}.
 -Wdangling-pointer=2  @gol
 -Wduplicate-decl-specifier @r{(C and Objective-C only)} @gol
 -Wenum-compare @r{(in C/ObjC; this is on by default in C++)} @gol
+-Wenum-int-mismatch @r{(C and Objective-C only)} @gol
 -Wformat   @gol
 -Wformat-overflow  @gol
 -Wformat-truncation  @gol
@@ -8723,6 +8747,25 @@ Warn when a value of enumerated type is implicitly converted to a
 different enumerated type.  This warning is enabled by @option{-Wextra}
 in C@.
 
+@item -Wenum-int-mismatch @r{(C and Objective-C only)}
+@opindex Wenum-int-mismatch
+@opindex Wno-enum-int-mismatch
+Warn about mismatches between an enumerated type and an integer type in
+declarations.  For example:
+
+@smallexample
+enum E @{ l = -1, z = 0, g = 1 @};
+int foo(void);
+enum E foo(void);
+@end smallexample
+
+In C, an enumerated type is compatible with @code{char}, a signed
+integer type, or an unsigned integer type.  However, since the choice
+of the underlying type of an enumerated type is implementation-defined,
+such mismatches may cause portability issues.  In C++, such mismatches
+are an error.  In C, this warning is enabled by @option{-Wall} and
+@option{-Wc++-compat}.
+
 @item -Wjump-misses-init @r{(C, Objective-C only)}
 @opindex Wjump-misses-init
 @opindex Wno-jump-misses-init
@@ -8858,7 +8901,7 @@ such as in
 void f (void);
 void g (void)
 @{
-  if (!func)   // warning: expression evaluates to false
+  if (!f)   // warning: expression evaluates to false
     abort ();
 @}
 @end smallexample
@@ -8884,7 +8927,7 @@ weak symbols), so their use in a conditional might indicate missing
 parentheses in a function call or a missing dereference in an array
 expression.  The subset of the warning for object pointers can be
 suppressed by casting the pointer operand to an integer type such
-as @code{inptr_t} or @code{uinptr_t}.
+as @code{intptr_t} or @code{uintptr_t}.
 Comparisons against string literals result in unspecified behavior
 and are not portable, and suggest the intent was to call @code{strcmp}.
 The warning is suppressed if the suspicious expression is the result
@@ -9681,6 +9724,10 @@ Enabling this option effectively enables the following warnings:
 -Wanalyzer-use-after-free @gol
 -Wanalyzer-use-of-pointer-in-stale-stack-frame @gol
 -Wanalyzer-use-of-uninitialized-value @gol
+-Wanalyzer-va-arg-type-mismatch @gol
+-Wanalyzer-va-list-exhausted @gol
+-Wanalyzer-va-list-leak @gol
+-Wanalyzer-va-list-use-after-va-end @gol
 -Wanalyzer-write-to-const @gol
 -Wanalyzer-write-to-string-literal @gol
 }
@@ -9963,6 +10010,53 @@ to disable it.
 This diagnostic warns for paths through the code in which a pointer
 is dereferenced that points to a variable in a stale stack frame.
 
+@item -Wno-analyzer-va-arg-type-mismatch
+@opindex Wanalyzer-va-arg-type-mismatch
+@opindex Wno-analyzer-va-arg-type-mismatch
+This warning requires @option{-fanalyzer}, which enables it; use
+@option{-Wno-analyzer-va-arg-type-mismatch}
+to disable it.
+
+This diagnostic warns for interprocedural paths through the code for which
+the analyzer detects an attempt to use @code{va_arg} to extract a value
+passed to a variadic call, but uses a type that does not match that of
+the expression passed to the call.
+
+@item -Wno-analyzer-va-list-exhausted
+@opindex Wanalyzer-va-list-exhausted
+@opindex Wno-analyzer-va-list-exhausted
+This warning requires @option{-fanalyzer}, which enables it; use
+@option{-Wno-analyzer-va-list-exhausted}
+to disable it.
+
+This diagnostic warns for interprocedural paths through the code for which
+the analyzer detects an attempt to use @code{va_arg} to access the next
+value passed to a variadic call, but all of the values in the
+@code{va_list} have already been consumed.
+
+@item -Wno-analyzer-va-list-leak
+@opindex Wanalyzer-va-list-leak
+@opindex Wno-analyzer-va-list-leak
+This warning requires @option{-fanalyzer}, which enables it; use
+@option{-Wno-analyzer-va-list-leak}
+to disable it.
+
+This diagnostic warns for interprocedural paths through the code for which
+the analyzer detects that @code{va_start} or @code{va_copy} has been called
+on a @code{va_list} without a corresponding call to @code{va_end}.
+
+@item -Wno-analyzer-va-list-use-after-va-end
+@opindex Wanalyzer-va-list-use-after-va-end
+@opindex Wno-analyzer-va-list-use-after-va-end
+This warning requires @option{-fanalyzer}, which enables it; use
+@option{-Wno-analyzer-va-list-use-after-va-end}
+to disable it.
+
+This diagnostic warns for interprocedural paths through the code for which
+the analyzer detects an attempt to use a @code{va_list}  after
+@code{va_end} has been called on it.
+@code{va_list}.
+
 @item -Wno-analyzer-write-to-const
 @opindex Wanalyzer-write-to-const
 @opindex Wno-analyzer-write-to-const
@@ -10045,6 +10139,8 @@ following warnings from @option{-fanalyzer}:
 -Wanalyzer-possible-null-dereference @gol
 -Wanalyzer-unsafe-call-within-signal-handler @gol
 -Wanalyzer-use-after-free @gol
+-Wanalyzer-va-list-leak @gol
+-Wanalyzer-va-list-use-after-va-end @gol
 }
 
 @item -fno-analyzer-feasibility
@@ -10198,8 +10294,8 @@ diagnostic to @file{@var{file}.@var{idx}.@var{kind}.epath.txt}.
 @opindex dump-analyzer-feasibility
 Dump internal details about the analyzer's search for feasible paths.
 The details are written in a form suitable for viewing with GraphViz
-to filenames of the form @file{@var{file}.*.fg.dot} and
-@file{@var{file}.*.tg.dot}.
+to filenames of the form @file{@var{file}.*.fg.dot},
+@file{@var{file}.*.tg.dot}, and @file{@var{file}.*.fpath.txt}.
 
 @item -fdump-analyzer-json
 @opindex fdump-analyzer-json
@@ -14117,9 +14213,6 @@ The maximum depth of a loop nest suitable for complete peeling.
 @item max-unswitch-insns
 The maximum number of insns of an unswitched loop.
 
-@item max-unswitch-level
-The maximum number of branches unswitched in a single loop.
-
 @item lim-expensive
 The minimum cost of an expensive expression in the loop invariant motion.
 
@@ -15462,7 +15555,7 @@ profile information generated by @option{-fprofile-arcs} is placed in the
 specified section for each translation unit.  This option disables the profile
 information registration through a constructor and it disables the profile
 information processing through a destructor.  This option is not intended to be
-used in hosted environments such as GNU/Linux.  It targets free-standing
+used in hosted environments such as GNU/Linux.  It targets freestanding
 environments (for example embedded systems) with limited resources which do not
 support constructors/destructors or the C library file I/O.
 
@@ -15487,14 +15580,8 @@ for example like this:
 #include <stdio.h>
 #include <stdlib.h>
 
-extern const struct gcov_info *__gcov_info_start[];
-extern const struct gcov_info *__gcov_info_end[];
-
-static void
-filename (const char *f, void *arg)
-@{
-  puts (f);
-@}
+extern const struct gcov_info *const __gcov_info_start[];
+extern const struct gcov_info *const __gcov_info_end[];
 
 static void
 dump (const void *d, unsigned n, void *arg)
@@ -15503,6 +15590,12 @@ dump (const void *d, unsigned n, void *arg)
 
   for (unsigned i = 0; i < n; ++i)
     printf ("%02x", c[i]);
+@}
+
+static void
+filename (const char *f, void *arg)
+@{
+  __gcov_filename_to_gcfn (f, dump, arg );
 @}
 
 static void *
@@ -15514,8 +15607,8 @@ allocate (unsigned length, void *arg)
 static void
 dump_gcov_info (void)
 @{
-  const struct gcov_info **info = __gcov_info_start;
-  const struct gcov_info **end = __gcov_info_end;
+  const struct gcov_info *const *info = __gcov_info_start;
+  const struct gcov_info *const *end = __gcov_info_end;
 
   /* Obfuscate variable to prevent compiler optimizations.  */
   __asm__ ("" : "+r" (info));
@@ -15530,12 +15623,17 @@ dump_gcov_info (void)
 @}
 
 int
-main()
+main (void)
 @{
-  dump_gcov_info();
+  dump_gcov_info ();
   return 0;
 @}
 @end smallexample
+
+The @command{merge-stream} subcommand of @command{gcov-tool} may be used to
+deserialize the data stream generated by the @code{__gcov_filename_to_gcfn} and
+@code{__gcov_info_to_gcda} functions and merge the profile information into
+@file{.gcda} files on the host filesystem.
 
 @item -fprofile-note=@var{path}
 @opindex fprofile-note
@@ -19648,7 +19746,6 @@ Set architecture type or tuning for @var{gpu}. Supported values for @var{gpu}
 are
 
 @table @samp
-@opindex fiji
 @item fiji
 Compile for GCN3 Fiji devices (gfx803).
 
@@ -19657,6 +19754,12 @@ Compile for GCN5 Vega 10 devices (gfx900).
 
 @item gfx906
 Compile for GCN5 Vega 20 devices (gfx906).
+
+@item gfx908
+Compile for CDNA1 Instinct MI100 series devices (gfx908).
+
+@item gfx90a
+Compile for CDNA2 Instinct MI200 series devices (gfx90a).
 
 @end table
 
@@ -21087,7 +21190,8 @@ Permissible names are: @samp{arm7tdmi}, @samp{arm7tdmi-s}, @samp{arm710t},
 @samp{cortex-m0plus.small-multiply}, @samp{exynos-m1}, @samp{marvell-pj4},
 @samp{neoverse-n1}, @samp{neoverse-n2}, @samp{neoverse-v1}, @samp{xscale},
 @samp{iwmmxt}, @samp{iwmmxt2}, @samp{ep9312}, @samp{fa526}, @samp{fa626},
-@samp{fa606te}, @samp{fa626te}, @samp{fmp626}, @samp{fa726te}, @samp{xgene1}.
+@samp{fa606te}, @samp{fa626te}, @samp{fmp626}, @samp{fa726te}, @samp{star-mc1},
+@samp{xgene1}.
 
 Additionally, this option can specify that GCC should tune the performance
 of the code for a big.LITTLE system.  Permissible names are:
@@ -21493,8 +21597,9 @@ Development Tools Engineering Specification", which can be found on
 Mitigate against a potential security issue with the @code{VLLDM} instruction
 in some M-profile devices when using CMSE (CVE-2021-365465).  This option is
 enabled by default when the option @option{-mcpu=} is used with
-@code{cortex-m33}, @code{cortex-m35p} or @code{cortex-m55}.  The option
-@option{-mno-fix-cmse-cve-2021-35465} can be used to disable the mitigation.
+@code{cortex-m33}, @code{cortex-m35p}, @code{cortex-m55} or @code{star-mc1}.
+The option @option{-mno-fix-cmse-cve-2021-35465} can be used to disable
+the mitigation.
 
 @item -mstack-protector-guard=@var{guard}
 @itemx -mstack-protector-guard-offset=@var{offset}
@@ -22365,8 +22470,7 @@ These options are defined specifically for the CRIS ports.
 Generate code for the specified architecture.  The choices for
 @var{architecture-type} are @samp{v3}, @samp{v8} and @samp{v10} for
 respectively ETRAX@w{ }4, ETRAX@w{ }100, and ETRAX@w{ }100@w{ }LX@.
-Default is @samp{v0} except for cris-axis-linux-gnu, where the default is
-@samp{v10}.
+Default is @samp{v0}.
 
 @item -mtune=@var{architecture-type}
 @opindex mtune
@@ -22450,27 +22554,13 @@ option only together with visual inspection of the compiled code: no
 warnings or errors are generated when call-saved registers must be saved,
 or storage for local variables needs to be allocated.
 
-@item -mno-gotplt
-@itemx -mgotplt
-@opindex mno-gotplt
-@opindex mgotplt
-With @option{-fpic} and @option{-fPIC}, don't generate (do generate)
-instruction sequences that load addresses for functions from the PLT part
-of the GOT rather than (traditional on other architectures) calls to the
-PLT@.  The default is @option{-mgotplt}.
-
 @item -melf
 @opindex melf
-Legacy no-op option only recognized with the cris-axis-elf and
-cris-axis-linux-gnu targets.
-
-@item -mlinux
-@opindex mlinux
-Legacy no-op option only recognized with the cris-axis-linux-gnu target.
+Legacy no-op option.
 
 @item -sim
 @opindex sim
-This option, recognized for the cris-axis-elf, arranges
+This option arranges
 to link with input-output functions from a simulator library.  Code,
 initialized data and zero-initialized data are allocated consecutively.
 
@@ -31740,6 +31830,11 @@ VIA Nano Quad Core CPU with x86-64, MMX, SSE, SSE2, SSE3, SSSE3 and SSE4.1
 instruction set support.
 (No scheduling is implemented for this chip.)
 
+@item lujiazui
+ZHAOXIN lujiazui CPU with x86-64, MOVBE, MMX, SSE, SSE2, SSE3, SSSE3, SSE4.1,
+SSE4.2, AVX, POPCNT, AES, PCLMUL, RDRND, XSAVE, XSAVEOPT, FSGSBASE, CX16,
+ABM, BMI, BMI2, F16C, FXSR, RDSEED instruction set support.
+
 @item geode
 AMD Geode embedded processor with MMX and 3DNow!@: instruction set support.
 @end table
@@ -32642,6 +32737,17 @@ Insert ENDBR instruction at function entry only via the @code{cf_check}
 function attribute. This is useful when used with the option
 @option{-fcf-protection=branch} to control ENDBR insertion at the
 function entry.
+
+@item -mcet-switch
+@opindex mcet-switch
+By default, CET instrumentation is turned off on switch statements that
+use a jump table and indirect branch track is disabled.  Since jump
+tables are stored in read-only memory, this does not result in a direct
+loss of hardening.  But if the jump table index is attacker-controlled,
+the indirect jump may not be constrained by CET.  This option turns on
+CET instrumentation to enable indirect branch track for switch statements
+with jump tables which leads to the jump targets reachable via any indirect
+jumps.
 
 @item -mcall-ms2sysv-xlogues
 @opindex mcall-ms2sysv-xlogues

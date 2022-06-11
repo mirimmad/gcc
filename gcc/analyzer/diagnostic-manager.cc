@@ -112,6 +112,10 @@ private:
   void dump_feasible_graph (const exploded_node *target_enode,
 			    const char *desc, unsigned diag_idx,
 			    const feasible_graph &fg);
+  void dump_feasible_path (const exploded_node *target_enode,
+			   unsigned diag_idx,
+			   const feasible_graph &fg,
+			   const feasible_node &fnode) const;
 
   const exploded_graph &m_eg;
   shortest_exploded_paths *m_sep;
@@ -510,6 +514,9 @@ epath_finder::process_worklist_item (feasible_worklist *worklist,
 			     target_enode->m_index, diag_idx,
 			     succ_fnode->get_path_length ());
 	      *out_best_path = fg->make_epath (succ_fnode);
+	      if (flag_dump_analyzer_feasibility)
+		dump_feasible_path (target_enode, diag_idx, *fg, *succ_fnode);
+
 	      /* Success: stop the worklist iteration.  */
 	      return false;
 	    }
@@ -558,7 +565,7 @@ public:
   }
 
   void dump_extra_info (const exploded_node *enode,
-			pretty_printer *pp) const FINAL OVERRIDE
+			pretty_printer *pp) const final override
   {
     pp_printf (pp, "sp: %i", m_sep.get_shortest_path (enode).length ());
     pp_newline (pp);
@@ -605,6 +612,23 @@ epath_finder::dump_feasible_graph (const exploded_node *target_enode,
 	     dump_base_name, desc, diag_idx, target_enode->m_index);
   char *filename = xstrdup (pp_formatted_text (&pp));
   fg.dump_dot (filename, NULL, args);
+  free (filename);
+}
+
+/* Dump the path to FNODE to "BASE_NAME.DIAG_IDX.to-enN.fpath.txt".  */
+
+void
+epath_finder::dump_feasible_path (const exploded_node *target_enode,
+				  unsigned diag_idx,
+				  const feasible_graph &fg,
+				  const feasible_node &fnode) const
+{
+  auto_timevar tv (TV_ANALYZER_DUMP);
+  pretty_printer pp;
+  pp_printf (&pp, "%s.%i.to-en%i.fpath.txt",
+	     dump_base_name, diag_idx, target_enode->m_index);
+  char *filename = xstrdup (pp_formatted_text (&pp));
+  fg.dump_feasible_path (fnode, filename);
   free (filename);
 }
 
@@ -1406,7 +1430,7 @@ public:
   bool on_global_state_change (const state_machine &sm,
 			       state_machine::state_t src_sm_val,
 			       state_machine::state_t dst_sm_val)
-    FINAL OVERRIDE
+    final override
   {
     if (&sm != m_pb.get_sm ())
       return false;
@@ -1436,7 +1460,7 @@ public:
 			state_machine::state_t src_sm_val,
 			state_machine::state_t dst_sm_val,
 			const svalue *sval,
-			const svalue *dst_origin_sval) FINAL OVERRIDE
+			const svalue *dst_origin_sval) final override
   {
     if (&sm != m_pb.get_sm ())
       return false;
@@ -1564,13 +1588,13 @@ struct null_assignment_sm_context : public sm_context
   {
   }
 
-  tree get_fndecl_for_call (const gcall */*call*/) FINAL OVERRIDE
+  tree get_fndecl_for_call (const gcall */*call*/) final override
   {
     return NULL_TREE;
   }
 
   state_machine::state_t get_state (const gimple *stmt ATTRIBUTE_UNUSED,
-				    tree var) FINAL OVERRIDE
+				    tree var) final override
   {
     const svalue *var_old_sval
       = m_old_state->m_region_model->get_rvalue (var, NULL);
@@ -1583,7 +1607,7 @@ struct null_assignment_sm_context : public sm_context
   }
 
   state_machine::state_t get_state (const gimple *stmt ATTRIBUTE_UNUSED,
-				    const svalue *sval) FINAL OVERRIDE
+				    const svalue *sval) final override
   {
     const sm_state_map *old_smap = m_old_state->m_checker_states[m_sm_idx];
     state_machine::state_t current = old_smap->get_state (sval, m_ext_state);
@@ -1593,7 +1617,7 @@ struct null_assignment_sm_context : public sm_context
   void set_next_state (const gimple *stmt,
 		       tree var,
 		       state_machine::state_t to,
-		       tree origin ATTRIBUTE_UNUSED) FINAL OVERRIDE
+		       tree origin ATTRIBUTE_UNUSED) final override
   {
     state_machine::state_t from = get_state (stmt, var);
     if (from != m_sm.get_start_state ())
@@ -1617,7 +1641,7 @@ struct null_assignment_sm_context : public sm_context
   void set_next_state (const gimple *stmt,
 		       const svalue *sval,
 		       state_machine::state_t to,
-		       tree origin ATTRIBUTE_UNUSED) FINAL OVERRIDE
+		       tree origin ATTRIBUTE_UNUSED) final override
   {
     state_machine::state_t from = get_state (stmt, sval);
     if (from != m_sm.get_start_state ())
@@ -1637,36 +1661,41 @@ struct null_assignment_sm_context : public sm_context
   }
 
   void warn (const supernode *, const gimple *,
-	     tree, pending_diagnostic *d) FINAL OVERRIDE
+	     tree, pending_diagnostic *d) final override
+  {
+    delete d;
+  }
+  void warn (const supernode *, const gimple *,
+	     const svalue *, pending_diagnostic *d) final override
   {
     delete d;
   }
 
-  tree get_diagnostic_tree (tree expr) FINAL OVERRIDE
+  tree get_diagnostic_tree (tree expr) final override
   {
     return expr;
   }
 
-  tree get_diagnostic_tree (const svalue *sval) FINAL OVERRIDE
+  tree get_diagnostic_tree (const svalue *sval) final override
   {
     return m_new_state->m_region_model->get_representative_tree (sval);
   }
 
-  state_machine::state_t get_global_state () const FINAL OVERRIDE
+  state_machine::state_t get_global_state () const final override
   {
     return 0;
   }
 
-  void set_global_state (state_machine::state_t) FINAL OVERRIDE
+  void set_global_state (state_machine::state_t) final override
   {
     /* No-op.  */
   }
 
-  void on_custom_transition (custom_transition *) FINAL OVERRIDE
+  void on_custom_transition (custom_transition *) final override
   {
   }
 
-  tree is_zero_assignment (const gimple *stmt) FINAL OVERRIDE
+  tree is_zero_assignment (const gimple *stmt) final override
   {
     const gassign *assign_stmt = dyn_cast <const gassign *> (stmt);
     if (!assign_stmt)
@@ -1679,9 +1708,13 @@ struct null_assignment_sm_context : public sm_context
     return NULL_TREE;
   }
 
-  const program_state *get_old_program_state () const FINAL OVERRIDE
+  const program_state *get_old_program_state () const final override
   {
     return m_old_state;
+  }
+  const program_state *get_new_program_state () const final override
+  {
+    return m_new_state;
   }
 
   const program_state *m_old_state;
@@ -2024,15 +2057,7 @@ diagnostic_manager::add_events_for_superedge (const path_builder &pb,
       break;
 
     case SUPEREDGE_CALL:
-      {
-	emission_path->add_event
-	  (new call_event (eedge,
-			   (last_stmt
-			    ? last_stmt->location
-			    : UNKNOWN_LOCATION),
-			   src_point.get_fndecl (),
-			   src_stack_depth));
-      }
+      pd->add_call_event (eedge, emission_path);
       break;
 
     case SUPEREDGE_INTRAPROCEDURAL_CALL:
@@ -2147,6 +2172,7 @@ diagnostic_manager::prune_for_sm_diagnostic (checker_path *path,
 		  log ("considering event %i (%s), with sval: %qs, state: %qs",
 		       idx, event_kind_to_string (base_event->m_kind),
 		       sval_desc.m_buffer, state->get_name ());
+		  sval_desc.maybe_free ();
 		}
 	      else
 		log ("considering event %i (%s), with global state: %qs",
@@ -2214,6 +2240,8 @@ diagnostic_manager::prune_for_sm_diagnostic (checker_path *path,
 			     " switching var of interest from %qs to %qs",
 			     idx, sval_desc.m_buffer,
 			     origin_sval_desc.m_buffer);
+			sval_desc.maybe_free ();
+			origin_sval_desc.maybe_free ();
 		      }
 		    sval = state_change->m_origin;
 		  }
@@ -2241,6 +2269,7 @@ diagnostic_manager::prune_for_sm_diagnostic (checker_path *path,
 			else
 			  log ("filtering event %i: state change to %qs",
 			       idx, change_sval_desc.m_buffer);
+			change_sval_desc.maybe_free ();
 		      }
 		    else
 		      log ("filtering event %i: global state change", idx);
@@ -2310,6 +2339,7 @@ diagnostic_manager::prune_for_sm_diagnostic (checker_path *path,
 			 " recording critical state for %qs at call"
 			 " from %qE in callee to %qE in caller",
 			 idx, sval_desc.m_buffer, callee_var, caller_var);
+		    sval_desc.maybe_free ();
 		  }
 		if (expr.param_p ())
 		  event->record_critical_state (caller_var, state);
@@ -2353,6 +2383,7 @@ diagnostic_manager::prune_for_sm_diagnostic (checker_path *path,
 			     " recording critical state for %qs at return"
 			     " from %qE in caller to %qE in callee",
 			     idx, sval_desc.m_buffer, callee_var, callee_var);
+			sval_desc.maybe_free ();
 		      }
 		    if (expr.return_value_p ())
 		      event->record_critical_state (callee_var, state);

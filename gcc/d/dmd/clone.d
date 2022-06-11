@@ -563,9 +563,12 @@ FuncDeclaration buildXopEquals(StructDeclaration sd, Scope* sc)
         e = new DotIdExp(sd.loc, e, Id.object);
         e = new DotIdExp(sd.loc, e, id);
         e = e.expressionSemantic(sc);
-        Dsymbol s = getDsymbol(e);
-        assert(s);
-        sd.xerreq = s.isFuncDeclaration();
+        if (!e.isErrorExp())
+        {
+            Dsymbol s = getDsymbol(e);
+            assert(s);
+            sd.xerreq = s.isFuncDeclaration();
+        }
     }
     Loc declLoc; // loc is unnecessary so __xopEquals is never called directly
     Loc loc; // loc is unnecessary so errors are gagged
@@ -684,9 +687,12 @@ FuncDeclaration buildXopCmp(StructDeclaration sd, Scope* sc)
         e = new DotIdExp(sd.loc, e, Id.object);
         e = new DotIdExp(sd.loc, e, id);
         e = e.expressionSemantic(sc);
-        Dsymbol s = getDsymbol(e);
-        assert(s);
-        sd.xerrcmp = s.isFuncDeclaration();
+        if (!e.isErrorExp())
+        {
+            Dsymbol s = getDsymbol(e);
+            assert(s);
+            sd.xerrcmp = s.isFuncDeclaration();
+        }
     }
     Loc declLoc; // loc is unnecessary so __xopCmp is never called directly
     Loc loc; // loc is unnecessary so errors are gagged
@@ -867,7 +873,7 @@ void buildDtors(AggregateDeclaration ad, Scope* sc)
 
     // Build the field destructor (`ad.fieldDtor`), if needed.
     // If the user dtor is an extern(C++) prototype, then we expect it performs a full-destruction and skip building.
-    const bool dtorIsCppPrototype = ad.userDtors.dim && ad.userDtors[0].linkage == LINK.cpp && !ad.userDtors[0].fbody;
+    const bool dtorIsCppPrototype = ad.userDtors.dim && ad.userDtors[0]._linkage == LINK.cpp && !ad.userDtors[0].fbody;
     if (!dtorIsCppPrototype)
     {
         Expression e = null;
@@ -912,8 +918,8 @@ void buildDtors(AggregateDeclaration ad, Scope* sc)
                 ex = new DotVarExp(loc, ex, v);
 
                 // This is a hack so we can call destructors on const/immutable objects.
-                // Do it as a type 'paint'.
-                ex = new CastExp(loc, ex, v.type.mutableOf());
+                // Do it as a type 'paint', `cast()`
+                ex = new CastExp(loc, ex, MODFlags.none);
                 if (stc & STC.safe)
                     stc = (stc & ~STC.safe) | STC.trusted;
 
@@ -1019,7 +1025,7 @@ void buildDtors(AggregateDeclaration ad, Scope* sc)
 
     // Set/build `ad.dtor`.
     // On Windows, the dtor in the vtable is a shim with different signature.
-    ad.dtor = (ad.aggrDtor && ad.aggrDtor.linkage == LINK.cpp && !target.cpp.twoDtorInVtable)
+    ad.dtor = (ad.aggrDtor && ad.aggrDtor._linkage == LINK.cpp && !target.cpp.twoDtorInVtable)
         ? buildWindowsCppDtor(ad, ad.aggrDtor, sc)
         : ad.aggrDtor;
 
@@ -1588,7 +1594,7 @@ private bool needCopyCtor(StructDeclaration sd, out bool hasCpCtor)
 
         auto tf = ctorDecl.type.toTypeFunction();
         const dim = tf.parameterList.length;
-        if (dim == 1)
+        if (dim == 1 || (dim > 1 && tf.parameterList[1].defaultArg))
         {
             auto param = tf.parameterList[0];
             if (param.type.mutableOf().unSharedOf() == sd.type.mutableOf().unSharedOf())
